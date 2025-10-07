@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dynamic Puzzle Clock — Rooke Manor</title>
+<style>
+  :root{
+    --bg-image: url('plate.png');
+    --ring-size: min(70vmin, 560px);
+    --ring-stroke: 14;          /* thickness of the ring */
+    --active: #b40f10;          /* bold red */
+    --inactive: #1e1f21;        /* deep charcoal */
+    --divider: #3e444a;         /* thin divider & outlines */
+    --track: #0f1012;           /* base ring track */
+    --btn-bg: rgba(255,255,255,.08);
+    --btn-fg: #efe7d8;
+    --btn-border: rgba(255,255,255,.18);
+    --btn-hover: rgba(255,255,255,.14);
+  }
+  html, body { height: 100%; margin: 0; }
+  body{
+    background: #000 url() center/cover no-repeat fixed;
+    background-image: var(--bg-image);
+    color: #eee;
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    display: grid;
+    place-items: center;
+  }
+  .stage{
+    position: relative;
+    width: 100%;
+    max-width: 1100px;
+    aspect-ratio: 16/9;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: clamp(12px, 3vw, 32px);
+    padding: clamp(8px, 2vw, 20px);
+  }
+  .btn{
+    display: grid; place-items: center;
+    width: clamp(40px, 6vw, 64px);
+    height: clamp(40px, 6vw, 64px);
+    border-radius: 10px;
+    border: 1px solid var(--btn-border);
+    background: var(--btn-bg);
+    color: var(--btn-fg);
+    font-size: clamp(16px, 2.2vw, 22px);
+    font-weight: 700;
+    letter-spacing: .06em;
+    cursor: pointer;
+    user-select: none;
+    transition: transform .08s ease, background .2s ease, box-shadow .2s ease;
+    backdrop-filter: blur(2px);
+  }
+  .btn:focus-visible{ outline: 2px solid var(--active); outline-offset: 4px; }
+  .btn:hover{ background: var(--btn-hover); }
+  .btn:active{ transform: scale(.97); }
+
+  .clock-wrap{ position: relative; width: var(--ring-size); height: var(--ring-size); margin-inline: auto; }
+  .frame-overlay{ position:absolute; inset:0; background-position:center; background-size:contain; background-repeat:no-repeat; pointer-events:none; }
+  .center-embellishment{ position:absolute; inset:18% 18%; background-position:center; background-size:contain; background-repeat:no-repeat; pointer-events:none; filter: drop-shadow(0 0 10px rgba(0,0,0,.6)); }
+
+  svg{ width:100%; height:100%; display:block; shape-rendering: geometricPrecision; }
+  /* Smooth ring visuals in the target style */
+  .track { fill:none; stroke: var(--track); stroke-width: var(--ring-stroke); }
+  .seg   { fill:none; stroke: var(--active); stroke-width: var(--ring-stroke); stroke-linecap: butt; opacity: 0; transition: opacity .18s ease; }
+  .seg.active{ opacity: .5; }
+
+  .hud{ position:absolute; bottom: 10px; left: 50%; transform: translateX(-50%); font-size: clamp(12px, 1.8vw, 16px); color: #d8ccb6; text-align:center; opacity:.85; }
+  .count{ font-variant-numeric: tabular-nums; font-weight:600; color:#f0e2c8; }
+
+  @media (max-width: 840px){
+    .stage{ grid-template-columns: 1fr; grid-template-rows: auto auto auto; }
+    .btn{ width: 100%; max-width: 360px; height: 64px; border-radius: 12px; }
+  }
+</style>
+</head>
+<body>
+  <div class="stage" role="application" aria-label="Dynamic Puzzle Clock">
+    <button class="btn" id="decBtn" aria-label="Decrease progress" title="Decrease progress (A / Left)">−</button>
+
+    <div class="clock-wrap">
+      <!-- Optional decorative frame image around the ring -->
+      <!-- Example: set via JS or CSS:  document.querySelector('.frame-overlay').style.backgroundImage = "url('frame.png')"; -->
+      <div class="frame-overlay" id="frame"></div>
+
+      <!-- The Ring Clock (6 segments) -->
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+  <!-- base smooth track ring (inactive) -->
+  <circle class="track" cx="50" cy="50" r="42" />
+  <!-- active segments only (drawn over track) -->
+  <g id="segments"></g>
+  <!-- radial dividers and crisp inner/outer outlines -->
+  <g id="dividers"></g>
+  <!-- outer and inner edge strokes -->
+  <circle id="outerEdge" cx="50" cy="50" r="42" fill="none" stroke="var(--divider)" stroke-width="1" />
+  <circle id="innerEdge" cx="50" cy="50" r="42" fill="none" stroke="var(--divider)" stroke-width="1" />
+</svg>
+
+      <!-- Optional embellishment image at center of ring (crest, rune, etc.) -->
+      <div class="center-embellishment" id="embellishment"></div>
+
+      <div class="hud" aria-live="polite"></div>
+    </div>
+
+    <button class="btn" id="incBtn" aria-label="Increase progress" title="Increase progress (D / Right)">+</button>
+  </div>
+
+<script>
+(function(){
+  const SEGMENTS = 6;           // total slices
+
+  const segGroup = document.getElementById('segments');
+  const dividerGroup = document.getElementById('dividers');
+  const countEl = document.getElementById('count');
+  const incBtn = document.getElementById('incBtn');
+  const decBtn = document.getElementById('decBtn');
+
+  let value = 0; // 0..SEGMENTS
+
+  const polar = (cx, cy, r, angDeg) => {
+    const a = (angDeg - 90) * Math.PI/180; // start at 12 o'clock
+    return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+  };
+
+  function build(){
+    const r = 42; // ring radius (centerline of the stroke)
+    const stroke = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ring-stroke'));
+    const C = 2 * Math.PI * r;
+    const segLen = C/SEGMENTS; // equal length per segment
+
+    // Build only ACTIVE segments (inactive is the base track circle)
+    for (let i=0;i<SEGMENTS;i++){
+      const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+      c.setAttribute('class','seg');
+      c.setAttribute('cx','50');
+      c.setAttribute('cy','50');
+      c.setAttribute('r', String(r));
+      c.setAttribute('stroke-dasharray', `${segLen} ${C-segLen}`);
+      const offset = (C/SEGMENTS) * i;
+      const startAtTop = C * (90/360);
+      c.setAttribute('stroke-dashoffset', String(startAtTop + offset));
+      segGroup.appendChild(c);
+
+      // Divider lines
+      const ang = i * (360/SEGMENTS);
+      const outer = polar(50,50,r + stroke/2, ang);
+      const inner = polar(50,50,r - stroke/2, ang);
+      const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+      line.setAttribute('x1', inner.x);
+      line.setAttribute('y1', inner.y);
+      line.setAttribute('x2', outer.x);
+      line.setAttribute('y2', outer.y);
+      line.setAttribute('stroke', 'var(--divider)');
+      line.setAttribute('stroke-width', '1.2');
+      dividerGroup.appendChild(line);
+    }
+  }
+
+  function render(){
+    const paths = segGroup.querySelectorAll('.seg');
+    paths.forEach((p, idx)=>{ p.classList.toggle('active', idx < value); });
+    countEl.textContent = String(value);
+  }
+
+  function inc(){ value = Math.min(SEGMENTS, value+1); render(); }
+  function dec(){ value = Math.max(0, value-1); render(); }
+
+  incBtn.addEventListener('click', inc);
+  decBtn.addEventListener('click', dec);
+  window.addEventListener('keydown', (e)=>{
+    if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'd') { inc(); }
+    if (e.key === 'ArrowLeft'  || e.key.toLowerCase() === 'a') { dec(); }
+  });
+
+  const params = new URLSearchParams(location.search);
+  const bg = params.get('bg');
+  const frame = params.get('frame');
+  const center = params.get('center');
+  if (bg) document.body.style.setProperty('--bg-image', `url('${bg}')`);
+  if (frame) document.getElementById('frame').style.backgroundImage = `url('${frame}')`;
+  if (center) document.getElementById('embellishment').style.backgroundImage = `url('${center}')`;
+
+  // adjust outer/inner edge radii to hug the ring exactly
+  const stroke = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ring-stroke'));
+  document.getElementById('outerEdge').setAttribute('r', String(42 + stroke/2));
+  document.getElementById('innerEdge').setAttribute('r', String(42 - stroke/2));
+
+  build();
+  render();
+})();
+</script>
+</body>
+</html>
